@@ -11,26 +11,48 @@ logger = logging.getLogger(__name__)
 def psql_conn():
     psql_connection= get_db_connection()
     return psql_connection
-def authenticate_datasource_db(user_id, source_id, source_name, source_auth_token,refresh_token,status):
+
+
+def authenticate_datasource_db(user_id, source_id, source_name, source_auth_token, refresh_token, status):
     try:
         conn = psql_conn()
         cursor = conn.cursor()
 
+        # Query using INSERT ... ON CONFLICT to update if the combination of user_id and source_id already exists
         query = """
-               INSERT INTO datasource_auth (userid, sourceid, source_name, source_auth_token,refresh_token, created_at, status)
-               VALUES (%s, %s, %s, %s,%s, CURRENT_TIMESTAMP, %s)
-               RETURNING auth_id;
-           """
-        cursor.execute(query, (user_id, source_id, source_name, source_auth_token,status))
+            INSERT INTO datasource_auth (userid, sourceid, source_name, source_auth_token, refresh_token, created_at, status)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+            ON CONFLICT (userid, sourceid) 
+            DO UPDATE 
+            SET 
+                source_name = EXCLUDED.source_name,
+                source_auth_token = EXCLUDED.source_auth_token,
+                refresh_token = EXCLUDED.refresh_token,
+                status = EXCLUDED.status,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING auth_id;
+        """
+
+        # Execute the query
+        cursor.execute(query, (user_id, source_id, source_name, source_auth_token, refresh_token, status))
+
+        # Fetch the returned auth_id
         auth_id = cursor.fetchone()[0]
+
+        # Commit the transaction
         conn.commit()
+
         cursor.close()
         conn.close()
+
         logger.info({"message": "Data source authentication successful", "auth_id": auth_id})
+
         return jsonify({"message": "Data source authentication successful", "auth_id": auth_id}), 201
+
     except (Exception, DatabaseError) as e:
-        logger.error({"message": f"Error authenticating datasource: {e}", "user_id": user_id,"sourceid":source_id})
+        logger.error({"message": f"Error authenticating datasource: {e}", "user_id": user_id, "sourceid": source_id})
         return jsonify({"error": "Failed to authenticate with the data source"}), 500
+
 
 def update_access_token(user_id, source_id, new_access_token, new_refresh_token):
     """

@@ -64,7 +64,7 @@ def hubspot_auth_callback():
         response = generate_access_token(code)
 
         if response.status_code != 200:
-            authenticate_datasource_db(user_id, source_id, source_name, None, 'failed')
+            authenticate_datasource_db(user_id, source_id, source_name, None, None,'failed')
             return jsonify({"error": response.json().get('message', 'Failed to obtain access token')}), 400
 
         else:
@@ -79,8 +79,8 @@ def hubspot_auth_callback():
         #
         # session.permanent = True  # Makes the session permanent (if configured)
         # redis_connection.hset('user_tokens', email, source_auth_token)
-        #return jsonify({"message": "Authorization successful.","access_token":access_token}), 200
-        return redirect(FRONT_END_OBJECT_SELECTION_URL)
+        return jsonify({"message": "Authorization successful.","access_token":access_token}), 200
+        # return redirect(FRONT_END_OBJECT_SELECTION_URL)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
