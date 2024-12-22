@@ -1,7 +1,7 @@
 from flask import request, jsonify
 from backend.registration_login import registration_login_bp
 from backend.registration_login.registration_login_api_service import user_registration_insert, verify_otp_get, \
-    user_login, resend_otp_post
+    user_login, resend_otp_post, read_user_registration
 
 
 # Route: Register User (Create new user)
@@ -22,6 +22,15 @@ def register_user():
     # password_hash = hash_password(password)
     password_hash= password
     return user_registration_insert(username, email, password_hash)
+
+# Route: Register User (Create new user)
+@registration_login_bp.route('/read_user', methods=['GET'])
+def read_register_user():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    email = data.get('email')
+    response=read_user_registration(user_id=user_id,email=email)
+    return response
 
 
 # Route: OTP Verification (Verify OTP for the user)

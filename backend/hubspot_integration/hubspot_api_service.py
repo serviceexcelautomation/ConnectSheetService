@@ -5,11 +5,13 @@ import os
 
 import requests
 from dotenv import load_dotenv
-from flask import redirect, json, jsonify
+from flask import redirect, jsonify
 
-from backend.common.access_token.redis_connection import RedisConnection
 from backend.common.google_sheet.google_sheet_service import create_google_sheet, share_google_sheet, \
     store_in_google_sheets
+from backend.hubspot_integration.hubspot_auth import validate_and_refresh_token
+from backend.hubspot_integration.hubspot_postgres import get_source_auth_token, get_connect_user_to_source, \
+    connect_user_to_source_db, update_status_to_connected
 
 # Load environment variables
 load_dotenv()
@@ -17,26 +19,34 @@ load_dotenv()
 HUBSPOT_API_URL = os.getenv("HUBSPOT_API_URL")
 HOME_PAGE_URL=os.getenv("HOME_PAGE_URL")
 
-redis_connection = RedisConnection()
+# redis_connection = RedisConnection()
 
-def get_access_token(email):
+def get_access_token(user_id,source_id):
     """Retrieve the access token from the session."""
-    access_token = redis_connection.hget('user_tokens', email)
-    return access_token
+    response_token,statuscode=get_source_auth_token(user_id, source_id)
+    # Extract JSON data from the Response object
+    response_data = response_token.get_json()  # This will return a dictionary
+
+    # Extract the source_auth_token from the dictionary
+    source_auth_token = response_data.get("source_auth_token")
+    return response_data
 
 def get_user_email():
     # Implement this function to get the user's email or ID from HubSpot using the access token
     return "user@example.com"
 
 # To get hubspot tables
-def fetch_hubspot_tables():
-    print("hubspot table fun called")
-    email="ss@gmail.com"
-    access_token = get_access_token(email)
+def fetch_hubspot_tables(user_id,source_id):
+    tokens = get_access_token(user_id, source_id)
+    access_token = tokens.get("source_auth_token")
+    refresh_token = tokens.get("refresh_token")
+    # Validate and refresh the token
+    access_token = validate_and_refresh_token(user_id, source_id, access_token, refresh_token)
+
     if not access_token:
         logging.error("Access token not found in session.")
-        return redirect(HOME_PAGE_URL)  # Redirect to log in if access token is not available
-    print("access_token: "+ access_token)
+        return {"message":"Access token not found in session."}  # Redirect to log in if access token is not available
+
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
@@ -48,6 +58,8 @@ def fetch_hubspot_tables():
     for object_type in object_types:
         url = f'https://api.hubapi.com/crm/v3/schemas/{object_type}'
         response = requests.get(url, headers=headers)
+        if response.status_code == 401:  # Token expired
+            logging.info("Access token expired. Refreshing token.")
 
         if response.status_code == 200:
             data = response.json()
@@ -63,10 +75,12 @@ def fetch_hubspot_tables():
 
     return tables  # Return the list of tables
 
-def fetch_hubspot_table_fields(table_name):
-    """Fetch available fields for a specified HubSpot object type."""
-    email = "ss@gmail.com"
-    access_token = get_access_token(email=email)
+def fetch_hubspot_table_fields(table_name,user_id,source_id):
+    tokens = get_access_token(user_id, source_id)
+    access_token = tokens.get("source_auth_token")
+    refresh_token = tokens.get("refresh_token")
+    # Validate and refresh the token
+    access_token = validate_and_refresh_token(user_id, source_id,access_token,refresh_token)
     if not access_token:
         logging.error("Access token not found in session.")
         return []
@@ -84,61 +98,100 @@ def fetch_hubspot_table_fields(table_name):
             data = response.json()
             fields = [{'name': prop['name'], 'label': prop['label']} for prop in data['results']]
             # return json.dumps({'fields': fields})
-            return jsonify({'fields': fields}), 200
+            return jsonify({'table_name':table_name,'fields': fields}), 200
         else:
             logging.error(f"Error fetching fields for {table_name}: {response.json()}")
             # return json.dumps({'fields': []})  # Return empty fields on error
-            jsonify({'fields': []}), response.status_code
+            jsonify({'table_name':table_name,'fields': []}), response.status_code
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching fields for {table_name}: {str(e)}")
         return jsonify({'error': 'Failed to fetch fields.', 'details': str(e)}), 500  # Return 500 on request errors
 
-def hubspot_data_sync_to_sheet(email,hubspot_table_name,hubspot_selected_fields):
+def hubspot_data_sync_to_sheet(user_id, source_id, sync_frequency, googlesheet_name, googlesheet_id, additional_emails, hubspot_table_name, hubspot_selected_fields):
+    tokens = get_access_token(user_id, source_id)
+    access_token = tokens.get("source_auth_token")
+    refresh_token = tokens.get("refresh_token")
 
-    access_token = get_access_token(email=email)
+    # Validate and refresh the token
+    access_token = validate_and_refresh_token(user_id, source_id, access_token, refresh_token)
     if not access_token:
         return redirect(HOME_PAGE_URL)
 
-    # HubSpot API headers
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
     }
 
-    # Fetch records from the selected HubSpot object
-    all_objects = []
-    has_more = True
-    after = None
+    for table_name in hubspot_table_name:
+        all_objects = []
+        has_more = True
+        after = None
 
-    while has_more:
-        url = f'https://api.hubapi.com/crm/v3/objects/{hubspot_table_name}'
-        params = {
-            'limit': 20,
-            'properties': hubspot_selected_fields
-        }
-        if after:
-            params['after'] = after
+        while has_more:
+            url = f'https://api.hubapi.com/crm/v3/objects/{table_name}'
+            params = {
+                'limit': 20,
+                'properties': hubspot_selected_fields
+            }
+            if after:
+                params['after'] = after
 
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            return f"Error: {response.text}"
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                return jsonify({"error": f"Error fetching data from HubSpot: {response.text}"}), 500
 
-        data = response.json()
-        all_objects.extend(data.get('results', []))
-        has_more = data.get('paging', {}).get('next', {}).get('after') is not None
-        after = data.get('paging', {}).get('next', {}).get('after')
+            data = response.json()
+            all_objects.extend(data.get('results', []))
+            has_more = data.get('paging', {}).get('next', {}).get('after') is not None
+            after = data.get('paging', {}).get('next', {}).get('after')
 
-    # Create a new Google Sheet
-    new_sheet_id = create_google_sheet(f"HubSpot_{hubspot_table_name}")
-    sheet_url = f"https://docs.google.com/spreadsheets/d/{new_sheet_id}/edit"
-    share_google_sheet(new_sheet_id, email)
-    # Store the fetched data into the Google Sheet
-    store_in_google_sheets(all_objects, new_sheet_id, hubspot_table_name)
+        if not googlesheet_id:
+            new_sheet_id = create_google_sheet(f"HubSpot_{googlesheet_name}")
+            share_google_sheet(new_sheet_id, additional_emails)
+            googlesheet_id = new_sheet_id
+
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{googlesheet_id}/edit"
+
+        if all_objects:
+            response = store_in_google_sheets(
+                objects=all_objects,
+                sheet_id=googlesheet_id,
+                work_sheet_name=table_name,
+                selected_fields=hubspot_selected_fields
+            )
+            connect_user_to_source_db(
+                user_id=user_id,
+                source_id=source_id,
+                sync_frequency=sync_frequency,
+                googlesheet_name=googlesheet_name,
+                googlesheet_id=sheet_url,
+                additional_emails=additional_emails,
+                list_of_fieldnames=hubspot_selected_fields,
+                list_of_table_names=hubspot_table_name
+            )
+            update_status_to_connected(user_id=user_id, source_id=source_id)  # Update status to 'connected'
+            return response
+
+    return jsonify({"message": "Data synchronization completed successfully."}), 200
 
 
-def batch_update_or_insert_objects(email,object_type, objects):
+def get_hubspot_data_sync_to_sheet_info(user_id,source_id):
+    return get_connect_user_to_source(user_id=user_id,source_id=source_id)
+
+
+
+
+
+
+
+
+
+
+
+
+def batch_update_or_insert_objects(user_id,source_id,email,object_type, objects):
     url_base = f"https://api.hubapi.com/crm/v3/objects/{object_type}/"
-    access_token = get_access_token(email=email)
+    access_token = get_access_token(user_id,source_id)
     if not access_token:
         logging.error("Access token not found in session.")
         return []
@@ -177,6 +230,9 @@ def batch_update_or_insert_objects(email,object_type, objects):
                         "data": response.json()}), response.status_code
     else:
         return jsonify({"error": f"Error processing {object_type}", "details": response.json()}), response.status_code
+
+
+
 
 
 

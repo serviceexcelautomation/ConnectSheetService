@@ -1,19 +1,17 @@
 # hubspot_integration/hubspot_routes.py
 import os
-from crypt import methods
 
-from flask import request, jsonify, session, redirect
 from dotenv import load_dotenv
+from flask import request, jsonify, session, redirect
 
-from backend.common.access_token.redis_connection import RedisConnection
 from .hubspot_postgres import authenticate_datasource_db
 
 # Load environment variables
 load_dotenv()
 
 from . import hubspot_bp
-from .hubspot_api_service import fetch_hubspot_objects, fetch_hubspot_table_fields, fetch_hubspot_tables, \
-    hubspot_data_sync_to_sheet, batch_update_or_insert_objects
+from .hubspot_api_service import fetch_hubspot_table_fields, fetch_hubspot_tables, \
+    hubspot_data_sync_to_sheet, batch_update_or_insert_objects, get_hubspot_data_sync_to_sheet_info
 from .hubspot_auth import  generate_access_token
 
 # Load environment variables for configuration
@@ -47,9 +45,11 @@ def login():
         }
         return jsonify(error_message), 500  # Return 500 Internal Server Error
 
-@hubspot_bp.route('/hubspot/auth/callback', methods=['POST'])
+@hubspot_bp.route('/hubspot/auth/callback', methods=['GET'])
 def hubspot_auth_callback():
     """Handle HubSpot OAuth callback and set access token."""
+    print(f"Request args: {request.args}")  # Debug log
+    print(f"Request data: {request.get_json()}")  # Debug log for body
     code = request.args.get('code')
     if not code:
         return jsonify({"error": "No code provided."}), 400
@@ -68,9 +68,12 @@ def hubspot_auth_callback():
             return jsonify({"error": response.json().get('message', 'Failed to obtain access token')}), 400
 
         else:
-           source_auth_token = response.json().get('access_token')
-           session['access_token']=source_auth_token
-           authenticate_datasource_db(user_id, source_id, source_name, source_auth_token, 'success')
+            tokens = response.json()
+            access_token = tokens.get('access_token')
+            refresh_token = tokens.get('refresh_token')
+            session['access_token'] = access_token
+            session['refresh_token'] = refresh_token
+            authenticate_datasource_db(user_id, source_id, source_name, access_token,refresh_token, 'success')
 
         # print("access_token : "+source_auth_token)
         #
@@ -86,7 +89,10 @@ def hubspot_auth_callback():
 def get_hubspot_tables():
     print("hubspot table route called")
     """Fetch available HubSpot CRM object schemas (tables)."""
-    table_names = fetch_hubspot_tables()
+    data = request.get_json()
+    user_id = data.get('user_id')
+    source_id = data.get('source_id')
+    table_names = fetch_hubspot_tables(user_id=user_id,source_id=source_id)
     # print(table_names)
 
     # Ensure table_names is a list before returning
@@ -96,26 +102,49 @@ def get_hubspot_tables():
         return jsonify({'error': 'Failed to fetch tables'}), 500  # Handle unexpected response
 
 
-@hubspot_bp.route('/hubspot/fields', methods=['GET'])
+@hubspot_bp.route('/hubspot/table/fields', methods=['GET'])
 def get_hubspot_fields():
-    table_name = request.args.get('table_name')
+    data = request.get_json()
+    user_id = data.get('user_id')
+    source_id = data.get('source_id')
+    table_name= data.get('table_name')
     """Endpoint to fetch HubSpot fields for a specific query parameter (e.g., ?table_name=deals)."""
-    fields = fetch_hubspot_table_fields(table_name=table_name)
+    fields = fetch_hubspot_table_fields(user_id=user_id,source_id=source_id,table_name=table_name)
     return fields
 
-@hubspot_bp.route('/hubspot/syncto/sheet', methods=['POST'])
+@hubspot_bp.route('/hubspot/table/syncto/sheet', methods=['POST'])
 def sync_hubspot_data_to_sheet():
     """Fetch selected HubSpot object data and store it in a Google Sheet."""
     # Get the user input from JSON body
     data = request.json  # Parse JSON body
-    hubspot_table = data.get('hubspot_table')
-    selected_fields = data.get('selected_fields')  # The selected fields from JSON body
+    user_id = data.get('user_id')
+    source_id = data.get('source_id')
+    sync_frequency = data.get('sync_frequency', '1day')
+    googlesheet_name = data.get('googlesheet_name', '')
+    googlesheet_id = data.get('googlesheet_id', '')
+    additional_emails = data.get("additional_emails", [])
+    list_of_table_names = data.get('list_of_table_names', [])
+    hubspot_selected_fields = data.get('list_of_selected_fields', [])
 
-    if not selected_fields:
+
+    if not hubspot_selected_fields:
         return "Error: Please select at least one field.", 400
 
-    response=hubspot_data_sync_to_sheet(email="",hubspot_table_name=hubspot_table,hubspot_selected_fields=selected_fields)
+    response=hubspot_data_sync_to_sheet(user_id=user_id, source_id=source_id, sync_frequency=sync_frequency, googlesheet_name=googlesheet_name,googlesheet_id=googlesheet_id,additional_emails=additional_emails,hubspot_table_name=list_of_table_names,hubspot_selected_fields=hubspot_selected_fields)
     return response
+
+@hubspot_bp.route('/hubspot/getsync/sheetinfo', methods=['GET'])
+def get_sync_hubspot_data_to_sheet():
+    data = request.json  # Parse JSON body
+    user_id = data.get('user_id')
+    source_id = data.get('source_id')
+
+    if not user_id or not source_id:
+        return jsonify({"error": "userid and sourceid are required"}), 400
+
+    response=get_hubspot_data_sync_to_sheet_info(user_id=user_id,source_id=source_id)
+    return response
+
 
 @hubspot_bp.route('/hubspot/twowaysync/<object_type>', methods=['POST'])
 def sync_google_sheet_data_to_hubspot(object_type):

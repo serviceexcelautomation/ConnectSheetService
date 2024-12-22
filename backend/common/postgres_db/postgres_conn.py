@@ -126,6 +126,40 @@ def user_registration_insert_db(username, email, password_hash):
         logger.error(f"Error during user registration insert: {str(e)}")
         raise
 
+def get_user_info(user_id=None, email=None):
+    try:
+        if not user_id and not email:
+            return jsonify({"message": "Either user_id or email must be provided."}), 400
+
+        query = "SELECT * FROM user_registration WHERE"
+        params = []
+
+        if user_id:
+            query += " user_id = %s"
+            params.append(user_id)
+        elif email:
+            query += " email = %s"
+            params.append(email)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                user = cur.fetchone()
+
+                if user:
+                    return jsonify({
+                        "user_id": user[0],
+                        "username": user[1],
+                        "email": user[2]
+                        # "password_hash": user[3]
+                    }), 200
+                else:
+                    return jsonify({"message": "User not found."}), 404
+
+    except Exception as e:
+        logger.error(f"Error during retrieving user info: {str(e)}")
+        return jsonify({"message": "An error occurred while retrieving user information."}), 500
+
 def verify_otp_db(user_id, otp):
     try:
         with get_db_connection() as conn:
