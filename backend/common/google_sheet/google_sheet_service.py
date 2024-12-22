@@ -6,7 +6,8 @@ from flask import jsonify
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
+from dotenv import load_dotenv
+load_dotenv()
 service_account_file_path = os.getenv("service_account_file_path")
 # Google Sheets API setup
 def get_gspread_client():
