@@ -31,7 +31,8 @@ def login():
             "error": "Missing environment variables for HubSpot OAuth configuration."
         }
         return jsonify(error_message), 500  # Return 500 Internal Server Error
-
+    print("REDIRECT_URI")
+    print(REDIRECT_URI)
     # Construct the authorization URL
     auth_url = f"{AUTHORIZATION_URL}?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope={SCOPES}"
 
@@ -44,8 +45,7 @@ def login():
             "details": str(e)  # Capture any exception details
         }
         return jsonify(error_message), 500  # Return 500 Internal Server Error
-
-@hubspot_bp.route('/hubspot/auth/callback', methods=['GET'])
+@hubspot_bp.route('/hubspot/auth/token_generator', methods=['POST'])
 def hubspot_auth_callback():
     """Handle HubSpot OAuth callback and set access token."""
     print(f"Request args: {request.args}")  # Debug log
@@ -62,7 +62,8 @@ def hubspot_auth_callback():
 
     try:
         response = generate_access_token(code)
-
+        print("response :")
+        print(response)
         if response.status_code != 200:
             authenticate_datasource_db(user_id, source_id, source_name, None, None,'failed')
             return jsonify({"error": response.json().get('message', 'Failed to obtain access token')}), 400

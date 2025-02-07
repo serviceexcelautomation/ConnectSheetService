@@ -25,8 +25,14 @@ def generate_access_token(code):
         'redirect_uri': HUBSPOT_REDIRECT_URI,
         'code': code
     }
+    print(token_data)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
 
-    response = requests.post(TOKEN_URL, data=token_data)
+    response = requests.post(TOKEN_URL, data=token_data, headers=headers)
+    print(response.status_code)
+    print(response.json())
     return response
 
 def refresh_access_token(refresh_token):
